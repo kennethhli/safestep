@@ -3,8 +3,10 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from app.database import get_db
+from app.services.route_calculator import RouteCalculator
 
 router = APIRouter()
+route_calculator = RouteCalculator()
 
 class RouteRequest(BaseModel):
     start_lat: float
@@ -30,16 +32,23 @@ async def calculate_route(
     route_request: RouteRequest,
     db: Session = Depends(get_db)
 ):
-    # todo: add actual route calculation
+    # calculate route with risk scoring
+    result = route_calculator.calculate_route(
+        route_request.start_lat,
+        route_request.start_lng,
+        route_request.end_lat,
+        route_request.end_lng
+    )
+    
     return {
         "id": 1,
         "start_lat": route_request.start_lat,
         "start_lng": route_request.start_lng,
         "end_lat": route_request.end_lat,
         "end_lng": route_request.end_lng,
-        "risk_score": None,
-        "distance": None,
-        "estimated_time": None
+        "risk_score": result["risk_score"],
+        "distance": result["distance"],
+        "estimated_time": result["estimated_time"]
     }
 
 @router.get("/routes/{route_id}", response_model=RouteResponse)
