@@ -11,14 +11,13 @@ class RiskScorer:
         self._initialize_model()
     
     def _initialize_model(self):
-        # training data focused on walking safety: crimes, night crimes, lights
-        # features: [total_crimes, violent_crimes, night_violent, robberies, assaults, lights, is_night]
+        # features: [total_crimes, violent_crimes, night_violent, robberies, assaults, lights, accidents, pedestrian_activity, is_night]
         X_dummy = np.array([
-            [0, 0, 0, 0, 0, 10, 1],  # safe: no crimes, good lighting, night
-            [5, 1, 0, 0, 1, 8, 1],  # low risk: few crimes, some lights
-            [20, 5, 2, 1, 2, 5, 1],  # medium risk: some crimes, fewer lights
-            [50, 15, 10, 5, 5, 2, 1],  # high risk: many crimes, few lights, night
-            [10, 3, 1, 1, 1, 15, 0],  # safer during day even with some crimes
+            [0, 0, 0, 0, 0, 12, 0, 40, 1],
+            [6, 1, 0, 0, 1, 9, 1, 30, 1],
+            [18, 5, 2, 1, 2, 6, 4, 20, 1],
+            [45, 14, 9, 5, 5, 2, 10, 5, 1],
+            [10, 3, 1, 1, 1, 14, 2, 55, 0],
         ] * 10)
         y_dummy = np.array([0.1, 0.3, 0.6, 0.9, 0.2] * 10)
         self.model.fit(X_dummy, y_dummy)
@@ -32,6 +31,8 @@ class RiskScorer:
             features.get("robberies", 0),
             features.get("assaults", 0),
             features.get("street_lights", 0),
+            features.get("accidents", 0),
+            features.get("pedestrian_activity", 0),
             1 if features.get("is_night", False) else 0
         ]])
         
@@ -45,6 +46,17 @@ class RiskScorer:
         # if it's night and no lights, increase risk
         if features.get("is_night", False) and light_count == 0:
             base_risk *= 1.3
+
+        accidents = features.get("accidents", 0)
+        if accidents > 0:
+            base_risk *= min(1.35, 1.0 + (accidents * 0.03))
+
+        # busier pedestrian areas can feel safer up to a point
+        pedestrian_activity = features.get("pedestrian_activity", 0)
+        if pedestrian_activity > 20:
+            base_risk *= 0.92
+        elif pedestrian_activity < 5 and features.get("is_night", False):
+            base_risk *= 1.08
         
         # normalize to 0-1 scale
         risk_score = min(max(base_risk * light_factor, 0.0), 1.0)
