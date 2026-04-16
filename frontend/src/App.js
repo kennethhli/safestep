@@ -24,11 +24,47 @@ function App() {
   const [searchingEnd, setSearchingEnd] = useState(false);
   const [error, setError] = useState('');
   const [routeResult, setRouteResult] = useState(null);
+  const [selectedOptionId, setSelectedOptionId] = useState(null);
 
-  const routeGeoJson = useMemo(() => {
-    const geometryPoints = routeResult?.route_geometry?.length
-      ? routeResult.route_geometry
-      : routeResult?.waypoints;
+  const routeOptions = routeResult?.route_options?.length
+    ? routeResult.route_options
+    : (routeResult ? [{
+      option_id: 1,
+      label: 'safest',
+      risk_score: routeResult.risk_score,
+      distance: routeResult.distance,
+      estimated_time: routeResult.estimated_time,
+      route_geometry: routeResult.route_geometry,
+      waypoints: routeResult.waypoints,
+      danger_summary: routeResult.danger_summary,
+      hazards: routeResult.hazards || [],
+      risk_segments: routeResult.risk_segments || [],
+    }] : []);
+
+  const selectedRoute = routeOptions.find((route) => route.option_id === selectedOptionId) || routeOptions[0] || null;
+
+  const riskHeatGeoJson = useMemo(() => {
+    const segments = selectedRoute?.risk_segments;
+    if (!segments?.length) return null;
+    return {
+      type: 'FeatureCollection',
+      features: segments.map((seg, idx) => ({
+        type: 'Feature',
+        id: idx,
+        properties: { risk: seg.risk_display ?? seg.risk },
+        geometry: {
+          type: 'LineString',
+          coordinates: seg.coordinates,
+        },
+      })),
+    };
+  }, [selectedRoute]);
+
+  const routeFallbackGeoJson = useMemo(() => {
+    if (riskHeatGeoJson) return null;
+    const geometryPoints = selectedRoute?.route_geometry?.length
+      ? selectedRoute.route_geometry
+      : selectedRoute?.waypoints;
     if (!geometryPoints?.length) return null;
     return {
       type: 'Feature',
@@ -38,15 +74,77 @@ function App() {
       },
       properties: {},
     };
-  }, [routeResult]);
+  }, [selectedRoute, riskHeatGeoJson]);
 
-  const routeLayer = {
-    id: 'route-line',
+  const hazardGeoJson = useMemo(() => {
+    if (!selectedRoute?.hazards?.length) return null;
+    return {
+      type: 'FeatureCollection',
+      features: selectedRoute.hazards.map((hazard) => ({
+        type: 'Feature',
+        properties: {
+          type: hazard.type,
+          severity: hazard.severity,
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: [hazard.lng, hazard.lat],
+        },
+      })),
+    };
+  }, [selectedRoute]);
+
+  const routeFallbackLayer = {
+    id: 'route-line-fallback',
     type: 'line',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': '#2563eb',
       'line-width': 5,
       'line-opacity': 0.85,
+    },
+  };
+
+  const routeHeatLayer = {
+    id: 'route-risk-heat',
+    type: 'line',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-width': 9,
+      'line-opacity': 0.92,
+      'line-color': [
+        'interpolate',
+        ['linear'],
+        ['get', 'risk'],
+        0,
+        '#15803d',
+        0.35,
+        '#84cc16',
+        0.55,
+        '#eab308',
+        0.75,
+        '#f97316',
+        1,
+        '#991b1b',
+      ],
+    },
+  };
+
+  const hazardLayer = {
+    id: 'hazard-pins',
+    type: 'circle',
+    paint: {
+      'circle-radius': 6,
+      'circle-color': [
+        'match',
+        ['get', 'severity'],
+        'high', '#dc2626',
+        'medium', '#f59e0b',
+        '#2563eb',
+      ],
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 1.5,
+      'circle-opacity': 0.95,
     },
   };
 
@@ -168,6 +266,7 @@ function App() {
       }
       const data = await response.json();
       setRouteResult(data);
+      setSelectedOptionId(data?.route_options?.[0]?.option_id || 1);
     } catch (err) {
       setError('network error while calling the api');
     } finally {
@@ -177,6 +276,7 @@ function App() {
 
   const clearRoute = () => {
     setRouteResult(null);
+    setSelectedOptionId(null);
     setError('');
   };
 
@@ -194,8 +294,8 @@ function App() {
   };
 
   const formattedRiskScore =
-    routeResult && typeof routeResult.risk_score === 'number'
-      ? (routeResult.risk_score * 100).toFixed(0)
+    selectedRoute && typeof selectedRoute.risk_score === 'number'
+      ? (selectedRoute.risk_score * 100).toFixed(0)
       : null;
 
   return (
@@ -329,6 +429,34 @@ function App() {
 
           {routeResult && !error && (
             <div className="mt-6 border-t pt-4 grid grid-cols-1 gap-3 text-sm">
+              {routeOptions.length > 1 && (
+                <div className="bg-gray-50 rounded-md p-3">
+                  <p className="text-gray-500 mb-2">Route Options</p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {routeOptions.map((option) => {
+                      const isSelected = selectedRoute?.option_id === option.option_id;
+                      return (
+                        <button
+                          key={option.option_id}
+                          type="button"
+                          onClick={() => setSelectedOptionId(option.option_id)}
+                          className={`text-left rounded-md border px-3 py-2 ${isSelected ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium capitalize">{option.label}</span>
+                            <span className="text-xs text-gray-500">
+                              {(option.risk_score * 100).toFixed(0)}% risk
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-600">
+                            {formatMetersToMiles(option.distance)} • {formatSecondsToMinutes(option.estimated_time)}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="bg-gray-50 rounded-md p-3">
                 <p className="text-gray-500">overall risk</p>
                 <p className="mt-1 text-2xl font-semibold text-gray-900">
@@ -338,22 +466,33 @@ function App() {
               <div className="bg-gray-50 rounded-md p-3">
                 <p className="text-gray-500">distance</p>
                 <p className="mt-1 text-lg font-semibold text-gray-900">
-                  {routeResult.distance != null ? formatMetersToMiles(routeResult.distance) : 'n/a'}
+                  {selectedRoute?.distance != null ? formatMetersToMiles(selectedRoute.distance) : 'n/a'}
                 </p>
               </div>
               <div className="bg-gray-50 rounded-md p-3">
                 <p className="text-gray-500">estimated walk time</p>
                 <p className="mt-1 text-lg font-semibold text-gray-900">
-                  {routeResult.estimated_time != null
-                    ? formatSecondsToMinutes(routeResult.estimated_time)
+                  {selectedRoute?.estimated_time != null
+                    ? formatSecondsToMinutes(selectedRoute.estimated_time)
                     : 'n/a'}
                 </p>
               </div>
               <div className="bg-gray-50 rounded-md p-3">
                 <p className="text-gray-500">Safety Summary</p>
                 <p className="mt-1 text-sm text-gray-800 leading-6">
-                  {routeResult.danger_summary || 'no summary available'}
+                  {selectedRoute?.danger_summary || 'no summary available'}
                 </p>
+              </div>
+              <div className="bg-gray-50 rounded-md p-3">
+                <p className="text-gray-500">Route Hazards</p>
+                <ul className="mt-2 text-sm text-gray-800 space-y-1">
+                  {(selectedRoute?.hazards || []).slice(0, 4).map((hazard, idx) => (
+                    <li key={`${hazard.type}-${idx}`}>• {hazard.message}</li>
+                  ))}
+                  {(!selectedRoute?.hazards || selectedRoute.hazards.length === 0) && (
+                    <li>• no major hazard clusters detected on sampled segments</li>
+                  )}
+                </ul>
               </div>
             </div>
           )}
@@ -365,7 +504,7 @@ function App() {
               add `REACT_APP_MAPBOX_TOKEN=your_token` to `frontend/.env` to load the map.
             </div>
           )}
-          <div className="h-[620px]">
+          <div className="h-[620px] relative">
             <Map
               mapboxAccessToken={MAPBOX_TOKEN}
               initialViewState={INITIAL_VIEW}
@@ -380,12 +519,28 @@ function App() {
               {endPoint && (
                 <Marker longitude={endPoint.lng} latitude={endPoint.lat} color="#dc2626" />
               )}
-              {routeGeoJson && (
-                <Source id="route" type="geojson" data={routeGeoJson}>
-                  <Layer {...routeLayer} />
+              {riskHeatGeoJson && (
+                <Source id="route-risk-heat" type="geojson" data={riskHeatGeoJson}>
+                  <Layer {...routeHeatLayer} />
+                </Source>
+              )}
+              {routeFallbackGeoJson && (
+                <Source id="route-fallback" type="geojson" data={routeFallbackGeoJson}>
+                  <Layer {...routeFallbackLayer} />
+                </Source>
+              )}
+              {hazardGeoJson && (
+                <Source id="hazards" type="geojson" data={hazardGeoJson}>
+                  <Layer {...hazardLayer} />
                 </Source>
               )}
             </Map>
+            {riskHeatGeoJson && (
+              <div className="absolute bottom-3 left-3 max-w-xs rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
+                <span className="font-medium text-gray-800">Route risk</span>
+                <span className="text-gray-600"> — greener is calmer, redder is higher risk. Colors are normalized along this route so differences are easier to see.</span>
+              </div>
+            )}
           </div>
         </section>
       </main>

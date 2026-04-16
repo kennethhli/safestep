@@ -17,10 +17,13 @@ async def startup_event():
     except Exception as e:
         print(f"db connection failed: {e}")
 
-# allow frontend to call this api
+# localhost vs 127.0.0.1 are different origins — include both so preflight (OPTIONS) does not 400
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
