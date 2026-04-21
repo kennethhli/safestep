@@ -1,6 +1,6 @@
 import requests
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from app.config import settings
 
 class SFDataFetcher:
@@ -8,8 +8,15 @@ class SFDataFetcher:
         self.base_url = settings.SF_DATA_API_BASE
         self.api_key = os.getenv("SF_DATA_API_KEY")
         self.headers = {}
+        self.request_timeout = 7.0
+        self._feature_cache: Dict[Tuple[float, float, int, bool], Dict] = {}
         if self.api_key:
             self.headers["X-App-Token"] = self.api_key
+        self.debug = os.getenv("SF_DATA_DEBUG", "false").lower() == "true"
+
+    def _debug_log(self, message: str):
+        if self.debug:
+            print(f"[sf-data-debug] {message}")
 
     def _get_bounds(self, lat: float, lng: float, radius_meters: int) -> Tuple[float, float]:
         # keep this simple for now, enough for neighborhood-level lookup
@@ -17,6 +24,56 @@ class SFDataFetcher:
         lat_offset = radius_meters / 111000
         lng_offset = radius_meters / (111000 * safe_lat)
         return lat_offset, lng_offset
+
+    def _extract_lat_lng(self, row: Dict) -> Optional[Tuple[float, float]]:
+        # handle common socrata shapes across datasets
+        direct_pairs = [
+            ("latitude", "longitude"),
+            ("lat", "lon"),
+            ("lat", "lng"),
+        ]
+        for lat_key, lng_key in direct_pairs:
+            if row.get(lat_key) is not None and row.get(lng_key) is not None:
+                try:
+                    return float(row.get(lat_key)), float(row.get(lng_key))
+                except Exception:
+                    pass
+
+        for geom_key in ["location", "point", "geolocation"]:
+            geom = row.get(geom_key)
+            if isinstance(geom, dict):
+                coords = geom.get("coordinates")
+                if isinstance(coords, list) and len(coords) >= 2:
+                    try:
+                        lng, lat = float(coords[0]), float(coords[1])
+                        return lat, lng
+                    except Exception:
+                        pass
+                if geom.get("latitude") is not None and geom.get("longitude") is not None:
+                    try:
+                        return float(geom.get("latitude")), float(geom.get("longitude"))
+                    except Exception:
+                        pass
+        return None
+
+    def _within_radius(self, lat1: float, lng1: float, lat2: float, lng2: float, radius_m: int) -> bool:
+        # good enough for local filtering
+        lat_scale = 111000
+        lng_scale = 111000 * max(abs(lat1), 0.1)
+        d_lat = (lat2 - lat1) * lat_scale
+        d_lng = (lng2 - lng1) * lng_scale
+        return (d_lat * d_lat + d_lng * d_lng) ** 0.5 <= radius_m
+
+    def _filter_rows_near_point(self, rows: List[Dict], lat: float, lng: float, radius_meters: int) -> List[Dict]:
+        filtered: List[Dict] = []
+        for row in rows:
+            extracted = self._extract_lat_lng(row)
+            if not extracted:
+                continue
+            r_lat, r_lng = extracted
+            if self._within_radius(lat, lng, r_lat, r_lng, radius_meters):
+                filtered.append(row)
+        return filtered
 
     def _fetch_by_bbox(self, dataset_id: str, lat: float, lng: float, radius_meters: int, limit: int = 500) -> List[Dict]:
         url = f"{self.base_url}/{dataset_id}.json"
@@ -26,10 +83,13 @@ class SFDataFetcher:
             "$limit": limit
         }
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
+            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
             response.raise_for_status()
-            return response.json()
-        except Exception:
+            rows = response.json()
+            self._debug_log(f"{dataset_id} bbox success rows={len(rows)}")
+            return rows
+        except Exception as e:
+            self._debug_log(f"{dataset_id} bbox failed: {e}")
             return []
 
     def _fetch_with_where(self, dataset_id: str, where_clause: str, limit: int = 500) -> List[Dict]:
@@ -39,10 +99,35 @@ class SFDataFetcher:
             "$limit": limit
         }
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
+            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
             response.raise_for_status()
-            return response.json()
-        except Exception:
+            rows = response.json()
+            self._debug_log(f"{dataset_id} where success rows={len(rows)}")
+            return rows
+        except Exception as e:
+            status = None
+            body_snippet = ""
+            try:
+                status = response.status_code  # type: ignore[name-defined]
+                body_snippet = response.text[:180]  # type: ignore[name-defined]
+            except Exception:
+                pass
+            self._debug_log(
+                f"{dataset_id} where failed status={status} err={e} where='{where_clause[:110]}' body='{body_snippet}'"
+            )
+            return []
+
+    def _fetch_raw(self, dataset_id: str, limit: int = 1000) -> List[Dict]:
+        url = f"{self.base_url}/{dataset_id}.json"
+        params = {"$limit": limit}
+        try:
+            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
+            response.raise_for_status()
+            rows = response.json()
+            self._debug_log(f"{dataset_id} raw success rows={len(rows)}")
+            return rows
+        except Exception as e:
+            self._debug_log(f"{dataset_id} raw failed: {e}")
             return []
 
     def _fetch_dataset_with_strategies(self, dataset_id: str, lat: float, lng: float, radius_meters: int,
@@ -60,71 +145,57 @@ class SFDataFetcher:
             )
             rows = self._fetch_with_where(dataset_id, where_clause, limit=limit)
             if rows:
+                self._debug_log(f"{dataset_id} strategy hit with where='{where_clause[:100]}'")
                 return rows
+        self._debug_log(f"{dataset_id} all where strategies missed")
         return []
     
     def fetch_crime_data(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
         # sf police incidents from datasf (current schema can vary)
-        # keep only recent records so risk reflects current conditions
         strategies = [
-            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max} and incident_datetime >= date_add_ymd(now(), -1, 0, 0)",
             "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
-            "within_circle(location, {lat}, {lng}, {radius}) and incident_datetime >= date_add_ymd(now(), -1, 0, 0)",
-            "within_circle(location, {lat}, {lng}, {radius})",
         ]
         rows = self._fetch_dataset_with_strategies("wg3w-h783", lat, lng, radius_meters, strategies, limit=1000)
         if rows:
             return rows
-        return self._fetch_by_bbox("wg3w-h783", lat, lng, radius_meters, limit=1000)
+        # fallback: raw fetch then local geofilter
+        raw_rows = self._fetch_raw("wg3w-h783", limit=2000)
+        if raw_rows:
+            return self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
+        return []
     
     def fetch_street_lights(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
-        # sf street lights from datasf
-        strategies = [
-            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
-            "within_circle(location, {lat}, {lng}, {radius})",
-            "within_circle(point, {lat}, {lng}, {radius})",
-        ]
-        rows = self._fetch_dataset_with_strategies("3psu-2p5q", lat, lng, radius_meters, strategies, limit=300)
-        if rows:
-            return rows
-        return self._fetch_by_bbox("3psu-2p5q", lat, lng, radius_meters, limit=300)
+        # dataset ids can rotate; try a few and geofilter locally
+        candidate_ids = ["3psu-2p5q", "jhmw-wxhj", "dvit-zf4x"]
+        for dataset_id in candidate_ids:
+            raw_rows = self._fetch_raw(dataset_id, limit=2000)
+            if raw_rows:
+                filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
+                if filtered:
+                    return filtered
+        return []
 
     def fetch_accident_data(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
-        # sf collisions from datasf
-        strategies = [
-            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max} and accident_date >= date_add_ymd(now(), -1, 0, 0)",
-            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
-            "within_circle(point, {lat}, {lng}, {radius}) and accident_date >= date_add_ymd(now(), -1, 0, 0)",
-            "within_circle(point, {lat}, {lng}, {radius})",
-            "within_circle(location, {lat}, {lng}, {radius})",
-        ]
-        rows = self._fetch_dataset_with_strategies("ubvf-ztfx", lat, lng, radius_meters, strategies, limit=800)
-        if rows:
-            return rows
-        return self._fetch_by_bbox("ubvf-ztfx", lat, lng, radius_meters, limit=800)
+        raw_rows = self._fetch_raw("ubvf-ztfx", limit=2500)
+        if raw_rows:
+            return self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
+        return []
 
     def fetch_pedestrian_activity(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
-        # pedestrian volume can come from multiple datasf datasets
-        strategies = [
-            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
-            "within_circle(location, {lat}, {lng}, {radius})",
-            "within_circle(point, {lat}, {lng}, {radius})",
-        ]
-
-        primary_rows = self._fetch_dataset_with_strategies("t2mb-5m2v", lat, lng, radius_meters, strategies, limit=1000)
-        if primary_rows:
-            return primary_rows
-
-        # fallback portal dataset ids sometimes differ between terms and views
-        alt_dataset_ids = ["uu24-3a2q", "dima-8yku"]
-        for dataset_id in alt_dataset_ids:
-            rows = self._fetch_dataset_with_strategies(dataset_id, lat, lng, radius_meters, strategies, limit=1000)
-            if rows:
-                return rows
-
-        return self._fetch_by_bbox("t2mb-5m2v", lat, lng, radius_meters, limit=1000)
+        candidate_ids = ["t2mb-5m2v", "uu24-3a2q", "dima-8yku"]
+        for dataset_id in candidate_ids:
+            raw_rows = self._fetch_raw(dataset_id, limit=2500)
+            if raw_rows:
+                filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
+                if filtered:
+                    return filtered
+        return []
     
     def get_risk_features(self, lat: float, lng: float, radius: int = 500, is_night: bool = True) -> Dict:
+        cache_key = (round(lat, 4), round(lng, 4), radius, is_night)
+        if cache_key in self._feature_cache:
+            return self._feature_cache[cache_key]
+
         crimes = self.fetch_crime_data(lat, lng, radius)
         lights = self.fetch_street_lights(lat, lng, radius)
         accidents = self.fetch_accident_data(lat, lng, radius)
@@ -177,7 +248,7 @@ class SFDataFetcher:
         if pedestrian_volume == 0:
             pedestrian_volume = len(pedestrian_activity)
         
-        return {
+        result = {
             "total_crimes": len(crimes),
             "violent_crimes": violent_crimes,
             "night_violent_crimes": night_violent_crimes,
@@ -186,6 +257,22 @@ class SFDataFetcher:
             "street_lights": light_count,
             "accidents": accident_count,
             "pedestrian_activity": pedestrian_volume,
+            "has_crime_data": len(crimes) > 0,
+            "has_light_data": len(lights) > 0,
+            "has_accident_data": len(accidents) > 0,
+            "has_pedestrian_data": len(pedestrian_activity) > 0,
             "is_night": is_night
         }
+        source_hits = sum(
+            [
+                1 if result["has_crime_data"] else 0,
+                1 if result["has_light_data"] else 0,
+                1 if result["has_accident_data"] else 0,
+                1 if result["has_pedestrian_data"] else 0,
+            ]
+        )
+        result["data_source_hits"] = source_hits
+        result["data_unavailable"] = source_hits == 0
+        self._feature_cache[cache_key] = result
+        return result
 

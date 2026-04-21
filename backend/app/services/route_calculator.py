@@ -124,15 +124,15 @@ class RouteCalculator:
                 continue
             lat, lng = waypoints[idx]
 
-            if features.get("street_lights", 0) <= 1:
+            if (not features.get("data_unavailable", False)) and features.get("street_lights", 0) <= 1:
                 hazards.append({
                     "type": "low_lighting",
-                    "severity": "medium",
+                    "severity": "low",
                     "lat": lat,
                     "lng": lng,
                     "message": "limited street lighting in this segment"
                 })
-            if features.get("violent_crimes", 0) >= 5:
+            if features.get("violent_crimes", 0) >= 4:
                 hazards.append({
                     "type": "high_incident_density",
                     "severity": "high",
@@ -140,13 +140,29 @@ class RouteCalculator:
                     "lng": lng,
                     "message": "higher violent incident density nearby"
                 })
-            if features.get("accidents", 0) >= 6:
+            elif features.get("violent_crimes", 0) >= 2:
+                hazards.append({
+                    "type": "incident_density",
+                    "severity": "medium",
+                    "lat": lat,
+                    "lng": lng,
+                    "message": "elevated incident activity nearby"
+                })
+            if features.get("accidents", 0) >= 5:
                 hazards.append({
                     "type": "collision_hotspot",
                     "severity": "high",
                     "lat": lat,
                     "lng": lng,
                     "message": "collision hotspot near this segment"
+                })
+            elif features.get("accidents", 0) >= 3:
+                hazards.append({
+                    "type": "collision_risk",
+                    "severity": "medium",
+                    "lat": lat,
+                    "lng": lng,
+                    "message": "moderate collision risk in this area"
                 })
 
         # dedupe nearby same-type hazards so map stays readable
@@ -286,16 +302,73 @@ class RouteCalculator:
                     }
                 )
 
-        # stretch contrast for this route so small model differences still read on the map
+        # blend model risk with local feature pressure so color differences are visible along the path
         raw_vals = [s["risk"] for s in segments]
         lo = min(raw_vals)
         hi = max(raw_vals)
         span = hi - lo
+
+        waypoint_pressure = []
+        for f in risk_features:
+            pressure = (
+                f.get("violent_crimes", 0) * 0.30
+                + f.get("night_violent_crimes", 0) * 0.22
+                + f.get("accidents", 0) * 0.18
+                + max(0, 5 - f.get("street_lights", 0)) * 0.17
+                + max(0, 14 - f.get("pedestrian_activity", 0)) * 0.04
+            )
+            waypoint_pressure.append(max(0.0, pressure))
+        p_lo = min(waypoint_pressure) if waypoint_pressure else 0.0
+        p_hi = max(waypoint_pressure) if waypoint_pressure else 1.0
+        p_span = max(1e-6, p_hi - p_lo)
+
+        risk_norm_vals = []
         for s in segments:
-            if span < 1e-3:
-                s["risk_display"] = min(1.0, max(0.0, s["risk"]))
+            if span < 1e-6:
+                risk_norm_vals.append(0.5)
             else:
-                s["risk_display"] = min(1.0, max(0.0, (s["risk"] - lo) / span))
+                risk_norm_vals.append(min(1.0, max(0.0, (s["risk"] - lo) / span)))
+
+        display_vals = []
+        p_norm_vals = []
+        for idx, s in enumerate(segments):
+            coords = s["coordinates"]
+            mid = coords[len(coords) // 2]
+            mid_lng, mid_lat = mid[0], mid[1]
+
+            nearest_idx = 0
+            nearest_dist = float("inf")
+            for i, (wlat, wlng) in enumerate(waypoints):
+                d = self.haversine_distance(mid_lat, mid_lng, wlat, wlng)
+                if d < nearest_dist:
+                    nearest_dist = d
+                    nearest_idx = i
+
+            p_val = waypoint_pressure[nearest_idx] if waypoint_pressure else 0.0
+            p_norm = min(1.0, max(0.0, (p_val - p_lo) / p_span))
+            p_norm_vals.append(p_norm)
+
+            # mostly model risk, partly local pressure for better spatial contrast
+            blended = (risk_norm_vals[idx] * 0.65) + (p_norm * 0.35)
+            display_vals.append(blended)
+
+        d_lo = min(display_vals) if display_vals else 0.0
+        d_hi = max(display_vals) if display_vals else 1.0
+        d_span = d_hi - d_lo
+        avg_source_hits = (
+            sum(f.get("data_source_hits", 0) for f in risk_features) / len(risk_features)
+            if risk_features else 0.0
+        )
+        for idx, s in enumerate(segments):
+            if d_span < 1e-4:
+                if avg_source_hits < 0.5:
+                    # very low data coverage: show neutral caution instead of false green
+                    s["risk_display"] = 0.58
+                else:
+                    # if model variance is flat, fall back to local feature pressure
+                    s["risk_display"] = min(1.0, max(0.0, p_norm_vals[idx]))
+            else:
+                s["risk_display"] = min(1.0, max(0.0, (display_vals[idx] - d_lo) / d_span))
 
         return segments[:240]
 
@@ -308,13 +381,13 @@ class RouteCalculator:
         evaluated_routes = []
         for route in candidate_routes:
             coords = route.get("geometry", {}).get("coordinates", [])
-            waypoints = self._sample_waypoints(coords, max_points=14)
+            waypoints = self._sample_waypoints(coords, max_points=9)
             if len(waypoints) < 2:
                 continue
 
             risk_features = []
             for lat, lng in waypoints:
-                features = self.data_fetcher.get_risk_features(lat, lng, radius=200, is_night=True)
+                features = self.data_fetcher.get_risk_features(lat, lng, radius=140, is_night=True)
                 risk_features.append(features)
 
             risk_score = self.risk_scorer.score_route(waypoints, risk_features)
@@ -338,6 +411,7 @@ class RouteCalculator:
                 "avg_street_lights": sum(f.get("street_lights", 0) for f in risk_features) / len(risk_features),
                 "avg_accidents": sum(f.get("accidents", 0) for f in risk_features) / len(risk_features),
                 "avg_pedestrian_activity": sum(f.get("pedestrian_activity", 0) for f in risk_features) / len(risk_features),
+                "avg_data_source_hits": sum(f.get("data_source_hits", 0) for f in risk_features) / len(risk_features),
             }
             hazards = self._build_hazards(waypoints, risk_features)
             risk_segments = self._build_risk_segments(coords, waypoints, risk_features)

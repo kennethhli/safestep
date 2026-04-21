@@ -42,6 +42,15 @@ function App() {
     }] : []);
 
   const selectedRoute = routeOptions.find((route) => route.option_id === selectedOptionId) || routeOptions[0] || null;
+  const hazardSummary = useMemo(() => {
+    const hazards = selectedRoute?.hazards || [];
+    return {
+      high: hazards.filter((h) => ['collision_hotspot', 'high_incident_density'].includes(h.type)).length,
+      medium: hazards.filter((h) => ['collision_risk', 'incident_density'].includes(h.type)).length,
+      lowLighting: hazards.filter((h) => h.type === 'low_lighting').length,
+    };
+  }, [selectedRoute]);
+  const avgDataHits = selectedRoute?.feature_summary?.avg_data_source_hits ?? null;
 
   const riskHeatGeoJson = useMemo(() => {
     const segments = selectedRoute?.risk_segments;
@@ -136,11 +145,10 @@ function App() {
     paint: {
       'circle-radius': 6,
       'circle-color': [
-        'match',
-        ['get', 'severity'],
-        'high', '#dc2626',
-        'medium', '#f59e0b',
-        '#2563eb',
+        'case',
+        ['in', ['get', 'type'], ['literal', ['collision_hotspot', 'high_incident_density']]], '#dc2626',
+        ['==', ['get', 'severity'], 'medium'], '#f59e0b',
+        '#facc15',
       ],
       'circle-stroke-color': '#ffffff',
       'circle-stroke-width': 1.5,
@@ -293,11 +301,6 @@ function App() {
     return `${minutes.toFixed(1)} min`;
   };
 
-  const formattedRiskScore =
-    selectedRoute && typeof selectedRoute.risk_score === 'number'
-      ? (selectedRoute.risk_score * 100).toFixed(0)
-      : null;
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow-sm">
@@ -429,7 +432,15 @@ function App() {
 
           {routeResult && !error && (
             <div className="mt-6 border-t pt-4 grid grid-cols-1 gap-3 text-sm">
-              {routeOptions.length > 1 && (
+              {avgDataHits !== null && avgDataHits < 0.8 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-amber-800">
+                  <p className="font-medium">limited live data coverage</p>
+                  <p className="text-xs mt-1">
+                    risk view is using partial/noisy source data right now, so treat colors and score as lower confidence.
+                  </p>
+                </div>
+              )}
+              {routeOptions.length > 0 && (
                 <div className="bg-gray-50 rounded-md p-3">
                   <p className="text-gray-500 mb-2">Route Options</p>
                   <div className="grid grid-cols-1 gap-2">
@@ -458,12 +469,6 @@ function App() {
                 </div>
               )}
               <div className="bg-gray-50 rounded-md p-3">
-                <p className="text-gray-500">overall risk</p>
-                <p className="mt-1 text-2xl font-semibold text-gray-900">
-                  {formattedRiskScore !== null ? `${formattedRiskScore}%` : 'n/a'}
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-md p-3">
                 <p className="text-gray-500">distance</p>
                 <p className="mt-1 text-lg font-semibold text-gray-900">
                   {selectedRoute?.distance != null ? formatMetersToMiles(selectedRoute.distance) : 'n/a'}
@@ -478,21 +483,33 @@ function App() {
                 </p>
               </div>
               <div className="bg-gray-50 rounded-md p-3">
-                <p className="text-gray-500">Safety Summary</p>
-                <p className="mt-1 text-sm text-gray-800 leading-6">
-                  {selectedRoute?.danger_summary || 'no summary available'}
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-md p-3">
-                <p className="text-gray-500">Route Hazards</p>
-                <ul className="mt-2 text-sm text-gray-800 space-y-1">
-                  {(selectedRoute?.hazards || []).slice(0, 4).map((hazard, idx) => (
-                    <li key={`${hazard.type}-${idx}`}>• {hazard.message}</li>
-                  ))}
-                  {(!selectedRoute?.hazards || selectedRoute.hazards.length === 0) && (
-                    <li>• no major hazard clusters detected on sampled segments</li>
-                  )}
-                </ul>
+                <p className="text-gray-500">Hazard Breakdown</p>
+                <div className="mt-2 space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-gray-700">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600" />
+                      <span>high-risk clusters</span>
+                    </div>
+                    <span className="font-medium text-gray-900">{hazardSummary.high}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-gray-700">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" />
+                      <span>moderate caution spots</span>
+                    </div>
+                    <span className="font-medium text-gray-900">{hazardSummary.medium}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-gray-700">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                      <span>low-light segments</span>
+                    </div>
+                    <span className="font-medium text-gray-900">{hazardSummary.lowLighting}</span>
+                  </div>
+                </div>
+                {(selectedRoute?.hazards?.length || 0) === 0 && (
+                  <p className="mt-2 text-xs text-gray-500">no major hazard clusters detected on sampled segments</p>
+                )}
               </div>
             </div>
           )}
@@ -536,9 +553,17 @@ function App() {
               )}
             </Map>
             {riskHeatGeoJson && (
-              <div className="absolute bottom-3 left-3 max-w-xs rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
-                <span className="font-medium text-gray-800">Route risk</span>
-                <span className="text-gray-600"> — greener is calmer, redder is higher risk. Colors are normalized along this route so differences are easier to see.</span>
+              <div className="absolute bottom-3 left-3 max-w-sm rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
+                <p className="font-medium text-gray-800 mb-1">Route Risk Legend</p>
+                <div className="flex items-center gap-1 mb-1">
+                  <span className="inline-block w-7 h-1.5 bg-green-700 rounded-sm" />
+                  <span className="inline-block w-7 h-1.5 bg-lime-500 rounded-sm" />
+                  <span className="inline-block w-7 h-1.5 bg-yellow-500 rounded-sm" />
+                  <span className="inline-block w-7 h-1.5 bg-orange-500 rounded-sm" />
+                  <span className="inline-block w-7 h-1.5 bg-red-800 rounded-sm" />
+                </div>
+                <p className="text-gray-600">green = calmer segments, orange/red = higher modeled risk on that part of the route</p>
+                <p className="text-gray-500 mt-1">dot colors: red = high-risk cluster, orange = moderate caution, yellow = low lighting</p>
               </div>
             )}
           </div>

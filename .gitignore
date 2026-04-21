@@ -26,6 +26,13 @@ wheels/
 # Environment variables
 .env
 .env.local
+frontend/.env
+frontend/.env.local
+
+
+.venv/
+venv/
+backend/.venv/
 
 # Node
 node_modules/

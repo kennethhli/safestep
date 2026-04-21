@@ -2,16 +2,32 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from typing import List, Dict, Tuple
 import math
+from pathlib import Path
+import joblib
+from app.config import settings
 
 class RiskScorer:
     def __init__(self):
-        # simple risk model - could be trained on historical data
-        self.model = RandomForestRegressor(n_estimators=50, random_state=42)
-        # initialize with dummy data to get it working
+        self.model = RandomForestRegressor(n_estimators=120, random_state=42)
+        self.model_path = Path(settings.MODEL_ARTIFACT_PATH)
+        self._load_or_initialize_model()
+
+    def _load_or_initialize_model(self):
+        # use trained artifact when available, fallback to baseline model otherwise
+        try:
+            if self.model_path.exists():
+                loaded = joblib.load(self.model_path)
+                if isinstance(loaded, dict) and "model" in loaded:
+                    self.model = loaded["model"]
+                else:
+                    self.model = loaded
+                return
+        except Exception:
+            pass
         self._initialize_model()
     
     def _initialize_model(self):
-        # features: [total_crimes, violent_crimes, night_violent, robberies, assaults, lights, accidents, pedestrian_activity, is_night]
+        # fallback baseline if trained model artifact is missing
         X_dummy = np.array([
             [0, 0, 0, 0, 0, 12, 0, 40, 1],
             [6, 1, 0, 0, 1, 9, 1, 30, 1],
@@ -23,6 +39,10 @@ class RiskScorer:
         self.model.fit(X_dummy, y_dummy)
     
     def calculate_risk_score(self, features: Dict) -> float:
+        # when no external sources respond, keep a neutral-caution prior
+        if features.get("data_unavailable", False):
+            return 0.58
+
         # extract features focused on walking safety
         feature_vector = np.array([[
             features.get("total_crimes", 0),
