@@ -50,8 +50,6 @@ function App() {
       lowLighting: hazards.filter((h) => h.type === 'low_lighting').length,
     };
   }, [selectedRoute]);
-  const avgDataHits = selectedRoute?.feature_summary?.avg_data_source_hits ?? null;
-
   const riskHeatGeoJson = useMemo(() => {
     const segments = selectedRoute?.risk_segments;
     if (!segments?.length) return null;
@@ -432,14 +430,6 @@ function App() {
 
           {routeResult && !error && (
             <div className="mt-6 border-t pt-4 grid grid-cols-1 gap-3 text-sm">
-              {avgDataHits !== null && avgDataHits < 0.8 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-amber-800">
-                  <p className="font-medium">limited live data coverage</p>
-                  <p className="text-xs mt-1">
-                    risk view is using partial/noisy source data right now, so treat colors and score as lower confidence.
-                  </p>
-                </div>
-              )}
               {routeOptions.length > 0 && (
                 <div className="bg-gray-50 rounded-md p-3">
                   <p className="text-gray-500 mb-2">Route Options</p>
@@ -553,17 +543,39 @@ function App() {
               )}
             </Map>
             {riskHeatGeoJson && (
-              <div className="absolute bottom-3 left-3 max-w-sm rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
-                <p className="font-medium text-gray-800 mb-1">Route Risk Legend</p>
-                <div className="flex items-center gap-1 mb-1">
-                  <span className="inline-block w-7 h-1.5 bg-green-700 rounded-sm" />
-                  <span className="inline-block w-7 h-1.5 bg-lime-500 rounded-sm" />
-                  <span className="inline-block w-7 h-1.5 bg-yellow-500 rounded-sm" />
-                  <span className="inline-block w-7 h-1.5 bg-orange-500 rounded-sm" />
-                  <span className="inline-block w-7 h-1.5 bg-red-800 rounded-sm" />
+              <div className="absolute bottom-8 left-4 w-72 rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
+                <p className="font-medium text-gray-800">Route Legend</p>
+                <div className="mt-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Path risk</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[11px] text-gray-500">lower</span>
+                    <div className="flex-1 flex items-center gap-1">
+                      <span className="inline-block h-1.5 flex-1 bg-green-700 rounded-sm" />
+                      <span className="inline-block h-1.5 flex-1 bg-lime-500 rounded-sm" />
+                      <span className="inline-block h-1.5 flex-1 bg-yellow-500 rounded-sm" />
+                      <span className="inline-block h-1.5 flex-1 bg-orange-500 rounded-sm" />
+                      <span className="inline-block h-1.5 flex-1 bg-red-800 rounded-sm" />
+                    </div>
+                    <span className="text-[11px] text-gray-500">higher</span>
+                  </div>
                 </div>
-                <p className="text-gray-600">green = calmer segments, orange/red = higher modeled risk on that part of the route</p>
-                <p className="text-gray-500 mt-1">dot colors: red = high-risk cluster, orange = moderate caution, yellow = low lighting</p>
+                <div className="mt-2 border-t border-gray-200 pt-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Hazard pins</p>
+                  <div className="mt-1 space-y-1 text-gray-600">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600" />
+                      <span>high-risk cluster</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" />
+                      <span>moderate caution</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                      <span>low lighting</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

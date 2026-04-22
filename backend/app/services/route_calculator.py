@@ -457,6 +457,10 @@ class RouteCalculator:
                 break
 
         route_options = []
+        safest_risk = safest["risk_score"]
+        fastest_time = fastest["estimated_time"]
+        eps_risk = 1e-6
+        eps_time = 1e-6
         for idx, route in enumerate(option_pool):
             route_copy = dict(route)
             route_copy["option_id"] = idx + 1
@@ -467,7 +471,22 @@ class RouteCalculator:
             elif route is fastest:
                 route_copy["label"] = "fastest"
             else:
-                route_copy["label"] = "alternative"
+                time_delta = route["estimated_time"] - fastest_time
+                risk_delta = route["risk_score"] - safest_risk
+                is_strictly_slower = time_delta > eps_time
+                is_strictly_riskier = risk_delta > eps_risk
+                if (not is_strictly_riskier) and is_strictly_slower:
+                    route_copy["label"] = "safer alternative"
+                elif is_strictly_riskier and (not is_strictly_slower):
+                    route_copy["label"] = "faster alternative"
+                elif is_strictly_riskier and is_strictly_slower:
+                    route_copy["label"] = "balanced alternative"
+                elif abs(risk_delta) <= eps_risk and abs(time_delta) <= eps_time:
+                    route_copy["label"] = "similar alternative"
+                elif not is_strictly_riskier:
+                    route_copy["label"] = "safer alternative"
+                else:
+                    route_copy["label"] = "faster alternative"
             route_options.append(route_copy)
 
         selected = route_options[0]
