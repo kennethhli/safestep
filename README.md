@@ -1,12 +1,8 @@
 # SafeStep
 
-SafeStep is a San Francisco walking route app that ranks route options by safety risk, not just ETA.
-It pulls walking alternatives from Mapbox, scores them with city open data, and shows the results on an interactive map.
-
-## What this is
-
-Most map apps optimize for speed.
-I wanted to try a version that also surfaces safety context, especially for night walks or unfamiliar neighborhoods.
+- SafeStep is a San Francisco walking route app that ranks route options by safety risk, not just ETA.
+- It pulls walking alternatives from Mapbox, scores them with city open data, and shows the results on an interactive map.
+- Most map apps optimize for speed. I wanted to try a version that also surfaces safety context, especially for night walks or scary/unfamiliar neighborhoods.
 
 ## Current features
 
@@ -22,7 +18,7 @@ I wanted to try a version that also surfaces safety context, especially for nigh
 - **Backend:** FastAPI, Pydantic, requests
 - **ML:** scikit-learn (Random Forest), NumPy, joblib
 - **Data:** San Francisco Open Data (Socrata), Mapbox APIs
-- **DB layer (project setup):** PostgreSQL/PostGIS via SQLAlchemy + GeoAlchemy2
+- **DB layer:** PostgreSQL/PostGIS via SQLAlchemy + GeoAlchemy2
 
 ## Project structure
 
@@ -36,7 +32,7 @@ docker-compose.yml        local PostGIS database service
 
 ## Run locally
 
-I usually run backend and frontend in separate terminals.
+Run backend and frontend in separate terminals.
 
 ```bash
 git clone <your-repo-url>
@@ -100,7 +96,7 @@ This writes the `joblib` file used by the API at runtime.
 - Some open-data sources can be noisy or temporarily incomplete, so feature coverage can vary by location/time.
 - PostgreSQL/PostGIS is wired in the project setup; the core route-scoring flow mainly uses external APIs + model inference.
 
-## What I'd add next
+## Future implementations
 
 - Better calibrated labels / confidence intervals for risk score
 - More robust data source fallback and freshness tracking

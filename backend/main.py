@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 from app.database import engine, Base
 from app.routers import routes, health
 
@@ -17,13 +18,20 @@ async def startup_event():
     except Exception as e:
         print(f"db connection failed: {e}")
 
-# localhost vs 127.0.0.1 are different origins — include both so preflight (OPTIONS) does not 400
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+env_origins = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGINS", "").split(",")
+    if origin.strip()
+]
+allow_origins = list(dict.fromkeys(default_origins + env_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

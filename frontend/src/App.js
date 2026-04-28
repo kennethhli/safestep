@@ -4,6 +4,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import './App.css';
 
 const MAPBOX_TOKEN = process.env.REACT_APP_MAPBOX_TOKEN || '';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 const SF_BOUNDS = [-122.55, 37.68, -122.35, 37.84];
 const INITIAL_VIEW = {
   longitude: -122.4194,
@@ -256,7 +257,7 @@ function App() {
 
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:8000/api/routes/calculate', {
+      const response = await fetch(`${API_BASE_URL}/api/routes/calculate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
