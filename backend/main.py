@@ -28,10 +28,12 @@ env_origins = [
     if origin.strip()
 ]
 allow_origins = list(dict.fromkeys(default_origins + env_origins))
+frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", r"https://.*\.vercel\.app")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=frontend_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
