@@ -355,18 +355,10 @@ class RouteCalculator:
         d_lo = min(display_vals) if display_vals else 0.0
         d_hi = max(display_vals) if display_vals else 1.0
         d_span = d_hi - d_lo
-        avg_source_hits = (
-            sum(f.get("data_source_hits", 0) for f in risk_features) / len(risk_features)
-            if risk_features else 0.0
-        )
         for idx, s in enumerate(segments):
             if d_span < 1e-4:
-                if avg_source_hits < 0.5:
-                    # very low data coverage: show neutral caution instead of false green
-                    s["risk_display"] = 0.58
-                else:
-                    # if model variance is flat, fall back to local feature pressure
-                    s["risk_display"] = min(1.0, max(0.0, p_norm_vals[idx]))
+                # if model variance is flat, fall back to local feature pressure
+                s["risk_display"] = min(1.0, max(0.0, p_norm_vals[idx]))
             else:
                 s["risk_display"] = min(1.0, max(0.0, (display_vals[idx] - d_lo) / d_span))
 
