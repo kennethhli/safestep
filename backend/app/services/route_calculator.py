@@ -1,5 +1,6 @@
 import math
 from typing import List, Tuple, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from app.services.data_fetcher import SFDataFetcher
 from app.services.risk_model import RiskScorer
@@ -116,6 +117,65 @@ class RouteCalculator:
             lng = start_lng + (end_lng - start_lng) * t
             coordinates.append([lng, lat])
         return {"geometry": {"coordinates": coordinates}, "distance": None, "duration": None}
+
+    def _fetch_features_for_waypoints(self, waypoints: List[Tuple[float, float]]) -> List[Dict]:
+        if not waypoints:
+            return []
+
+        # Fetch external data in parallel so route scoring does not block on serial HTTP calls.
+        results: List[Optional[Dict]] = [None] * len(waypoints)
+        max_workers = min(4, len(waypoints))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(
+                    self.data_fetcher.get_risk_features,
+                    lat,
+                    lng,
+                    180,
+                    True,
+                ): idx
+                for idx, (lat, lng) in enumerate(waypoints)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception:
+                    # keep route calculation resilient even if one feature request fails
+                    results[idx] = {
+                        "total_crimes": 0,
+                        "violent_crimes": 0,
+                        "night_violent_crimes": 0,
+                        "robberies": 0,
+                        "assaults": 0,
+                        "street_lights": 0,
+                        "accidents": 0,
+                        "pedestrian_activity": 0,
+                        "has_crime_data": False,
+                        "has_light_data": False,
+                        "has_accident_data": False,
+                        "has_pedestrian_data": False,
+                        "is_night": True,
+                        "data_source_hits": 0,
+                        "data_unavailable": True,
+                    }
+        return [r if r is not None else {
+            "total_crimes": 0,
+            "violent_crimes": 0,
+            "night_violent_crimes": 0,
+            "robberies": 0,
+            "assaults": 0,
+            "street_lights": 0,
+            "accidents": 0,
+            "pedestrian_activity": 0,
+            "has_crime_data": False,
+            "has_light_data": False,
+            "has_accident_data": False,
+            "has_pedestrian_data": False,
+            "is_night": True,
+            "data_source_hits": 0,
+            "data_unavailable": True,
+        } for r in results]
 
     def _build_hazards(self, waypoints: List[Tuple[float, float]], risk_features: List[Dict]) -> List[Dict]:
         hazards: List[Dict] = []
@@ -373,14 +433,11 @@ class RouteCalculator:
         evaluated_routes = []
         for route in candidate_routes:
             coords = route.get("geometry", {}).get("coordinates", [])
-            waypoints = self._sample_waypoints(coords, max_points=9)
+            waypoints = self._sample_waypoints(coords, max_points=8)
             if len(waypoints) < 2:
                 continue
 
-            risk_features = []
-            for lat, lng in waypoints:
-                features = self.data_fetcher.get_risk_features(lat, lng, radius=140, is_night=True)
-                risk_features.append(features)
+            risk_features = self._fetch_features_for_waypoints(waypoints)
 
             risk_score = self.risk_scorer.score_route(waypoints, risk_features)
             route_distance = route.get("distance")

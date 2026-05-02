@@ -8,8 +8,9 @@ class SFDataFetcher:
         self.base_url = settings.SF_DATA_API_BASE
         self.api_key = os.getenv("SF_DATA_API_KEY")
         self.headers = {}
-        self.request_timeout = 7.0
+        self.request_timeout = float(os.getenv("SF_DATA_TIMEOUT_SECONDS", "2.8"))
         self._feature_cache: Dict[Tuple[float, float, int, bool], Dict] = {}
+        self.session = requests.Session()
         if self.api_key:
             self.headers["X-App-Token"] = self.api_key
         self.debug = os.getenv("SF_DATA_DEBUG", "false").lower() == "true"
@@ -83,7 +84,7 @@ class SFDataFetcher:
             "$limit": limit
         }
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
+            response = self.session.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
             response.raise_for_status()
             rows = response.json()
             self._debug_log(f"{dataset_id} bbox success rows={len(rows)}")
@@ -99,7 +100,7 @@ class SFDataFetcher:
             "$limit": limit
         }
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
+            response = self.session.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
             response.raise_for_status()
             rows = response.json()
             self._debug_log(f"{dataset_id} where success rows={len(rows)}")
@@ -121,7 +122,7 @@ class SFDataFetcher:
         url = f"{self.base_url}/{dataset_id}.json"
         params = {"$limit": limit}
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
+            response = self.session.get(url, params=params, headers=self.headers, timeout=self.request_timeout)
             response.raise_for_status()
             rows = response.json()
             self._debug_log(f"{dataset_id} raw success rows={len(rows)}")
@@ -155,11 +156,11 @@ class SFDataFetcher:
         strategies = [
             "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
         ]
-        rows = self._fetch_dataset_with_strategies("wg3w-h783", lat, lng, radius_meters, strategies, limit=1000)
+        rows = self._fetch_dataset_with_strategies("wg3w-h783", lat, lng, radius_meters, strategies, limit=600)
         if rows:
             return rows
         # fallback: raw fetch then local geofilter
-        raw_rows = self._fetch_raw("wg3w-h783", limit=2000)
+        raw_rows = self._fetch_raw("wg3w-h783", limit=900)
         if raw_rows:
             return self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
         return []
@@ -168,7 +169,7 @@ class SFDataFetcher:
         # dataset ids can rotate; try a few and geofilter locally
         candidate_ids = ["3psu-2p5q", "jhmw-wxhj", "dvit-zf4x"]
         for dataset_id in candidate_ids:
-            raw_rows = self._fetch_raw(dataset_id, limit=2000)
+            raw_rows = self._fetch_raw(dataset_id, limit=900)
             if raw_rows:
                 filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
                 if filtered:
@@ -176,7 +177,7 @@ class SFDataFetcher:
         return []
 
     def fetch_accident_data(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
-        raw_rows = self._fetch_raw("ubvf-ztfx", limit=2500)
+        raw_rows = self._fetch_raw("ubvf-ztfx", limit=1200)
         if raw_rows:
             return self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
         return []
@@ -184,7 +185,7 @@ class SFDataFetcher:
     def fetch_pedestrian_activity(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
         candidate_ids = ["t2mb-5m2v", "uu24-3a2q", "dima-8yku"]
         for dataset_id in candidate_ids:
-            raw_rows = self._fetch_raw(dataset_id, limit=2500)
+            raw_rows = self._fetch_raw(dataset_id, limit=1200)
             if raw_rows:
                 filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
                 if filtered:
