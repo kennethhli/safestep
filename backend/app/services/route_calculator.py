@@ -124,14 +124,15 @@ class RouteCalculator:
 
         # Fetch external data in parallel so route scoring does not block on serial HTTP calls.
         results: List[Optional[Dict]] = [None] * len(waypoints)
-        max_workers = min(4, len(waypoints))
+        # Keep concurrency low so DataSF does not rate-limit (HTTP 425) and flatten all scores.
+        max_workers = min(2, len(waypoints))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx = {
                 executor.submit(
                     self.data_fetcher.get_risk_features,
                     lat,
                     lng,
-                    180,
+                    500,
                     True,
                 ): idx
                 for idx, (lat, lng) in enumerate(waypoints)
@@ -184,7 +185,11 @@ class RouteCalculator:
                 continue
             lat, lng = waypoints[idx]
 
-            if (not features.get("data_unavailable", False)) and features.get("street_lights", 0) <= 1:
+            if (
+                features.get("has_light_data", False)
+                and (not features.get("data_unavailable", False))
+                and features.get("street_lights", 0) <= 1
+            ):
                 hazards.append({
                     "type": "low_lighting",
                     "severity": "low",
@@ -192,7 +197,7 @@ class RouteCalculator:
                     "lng": lng,
                     "message": "limited street lighting in this segment"
                 })
-            if features.get("violent_crimes", 0) >= 4:
+            if features.get("violent_crimes", 0) >= 3:
                 hazards.append({
                     "type": "high_incident_density",
                     "severity": "high",
@@ -200,7 +205,7 @@ class RouteCalculator:
                     "lng": lng,
                     "message": "higher violent incident density nearby"
                 })
-            elif features.get("violent_crimes", 0) >= 2:
+            elif features.get("violent_crimes", 0) >= 1:
                 hazards.append({
                     "type": "incident_density",
                     "severity": "medium",
@@ -208,7 +213,7 @@ class RouteCalculator:
                     "lng": lng,
                     "message": "elevated incident activity nearby"
                 })
-            if features.get("accidents", 0) >= 5:
+            if features.get("accidents", 0) >= 3:
                 hazards.append({
                     "type": "collision_hotspot",
                     "severity": "high",
@@ -216,7 +221,7 @@ class RouteCalculator:
                     "lng": lng,
                     "message": "collision hotspot near this segment"
                 })
-            elif features.get("accidents", 0) >= 3:
+            elif features.get("accidents", 0) >= 1:
                 hazards.append({
                     "type": "collision_risk",
                     "severity": "medium",
@@ -417,13 +422,14 @@ class RouteCalculator:
         d_span = d_hi - d_lo
         for idx, s in enumerate(segments):
             if d_span < 1e-4:
-                # if model variance is flat, fall back to local feature pressure
-                s["risk_display"] = min(1.0, max(0.0, p_norm_vals[idx]))
+                # if model variance is flat, use absolute risk so the line is not false-green
+                # (normalized 0.0 always maps to the calm end of the color scale)
+                s["risk_display"] = min(1.0, max(0.0, s["risk"]))
             else:
                 s["risk_display"] = min(1.0, max(0.0, (display_vals[idx] - d_lo) / d_span))
 
         return segments[:240]
-
+    
     def calculate_route(self, start_lat: float, start_lng: float,
                        end_lat: float, end_lng: float) -> Dict:
         candidate_routes = self._fetch_walking_routes(start_lat, start_lng, end_lat, end_lng)
@@ -438,7 +444,6 @@ class RouteCalculator:
                 continue
 
             risk_features = self._fetch_features_for_waypoints(waypoints)
-
             risk_score = self.risk_scorer.score_route(waypoints, risk_features)
             route_distance = route.get("distance")
             route_duration = route.get("duration")

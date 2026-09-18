@@ -84,23 +84,18 @@ function App() {
     };
   }, [selectedRoute, riskHeatGeoJson]);
 
-  const hazardGeoJson = useMemo(() => {
-    if (!selectedRoute?.hazards?.length) return null;
+  const hazardIconForType = (type) => {
+    if (type === 'low_lighting') return { icon: '💡', bg: '#eab308', label: 'low lighting' };
+    if (type === 'collision_hotspot' || type === 'collision_risk') {
+      return { icon: '⚠', bg: type === 'collision_hotspot' ? '#dc2626' : '#f59e0b', label: 'collision' };
+    }
+    // crime / incident density
     return {
-      type: 'FeatureCollection',
-      features: selectedRoute.hazards.map((hazard) => ({
-        type: 'Feature',
-        properties: {
-          type: hazard.type,
-          severity: hazard.severity,
-        },
-        geometry: {
-          type: 'Point',
-          coordinates: [hazard.lng, hazard.lat],
-        },
-      })),
+      icon: '!',
+      bg: type === 'high_incident_density' ? '#dc2626' : '#f59e0b',
+      label: 'crime',
     };
-  }, [selectedRoute]);
+  };
 
   const routeFallbackLayer = {
     id: 'route-line-fallback',
@@ -135,23 +130,6 @@ function App() {
         1,
         '#991b1b',
       ],
-    },
-  };
-
-  const hazardLayer = {
-    id: 'hazard-pins',
-    type: 'circle',
-    paint: {
-      'circle-radius': 6,
-      'circle-color': [
-        'case',
-        ['in', ['get', 'type'], ['literal', ['collision_hotspot', 'high_incident_density']]], '#dc2626',
-        ['==', ['get', 'severity'], 'medium'], '#f59e0b',
-        '#facc15',
-      ],
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': 1.5,
-      'circle-opacity': 0.95,
     },
   };
 
@@ -190,16 +168,26 @@ function App() {
       setStartResults([]);
       return undefined;
     }
+    // don't re-open dropdown after a place is already selected
+    if (startPoint?.label === startQuery) {
+      setStartResults([]);
+      return undefined;
+    }
 
     const timer = setTimeout(() => {
       searchAddress(startQuery, 'start');
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [startQuery]);
+  }, [startQuery, startPoint]);
 
   useEffect(() => {
     if (!endQuery.trim()) {
+      setEndResults([]);
+      return undefined;
+    }
+    // don't re-open dropdown after a place is already selected
+    if (endPoint?.label === endQuery) {
       setEndResults([]);
       return undefined;
     }
@@ -209,7 +197,7 @@ function App() {
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [endQuery]);
+  }, [endQuery, endPoint]);
 
   const selectPlace = (feature, target) => {
     const [lng, lat] = feature.center;
@@ -222,11 +210,13 @@ function App() {
       setStartPoint(selected);
       setStartQuery(feature.place_name);
       setStartResults([]);
+      setEndResults([]);
       setActiveClickMode('end');
     } else {
       setEndPoint(selected);
       setEndQuery(feature.place_name);
       setEndResults([]);
+      setStartResults([]);
     }
   };
 
@@ -330,8 +320,11 @@ function App() {
                 <input
                   type="text"
                   value={startQuery}
-                  onChange={(e) => setStartQuery(e.target.value)}
-                  placeholder="e.g. 579 36th ave"
+                  onChange={(e) => {
+                    setStartQuery(e.target.value);
+                    setStartPoint(null);
+                  }}
+                  placeholder="e.g. Ferry Building, San Francisco"
                   className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm p-2"
                 />
                 {searchingStart && (
@@ -360,8 +353,11 @@ function App() {
                 <input
                   type="text"
                   value={endQuery}
-                  onChange={(e) => setEndQuery(e.target.value)}
-                  placeholder="e.g. golden gate bridge"
+                  onChange={(e) => {
+                    setEndQuery(e.target.value);
+                    setEndPoint(null);
+                  }}
+                  placeholder="e.g. Dolores Park, San Francisco"
                   className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm p-2"
                 />
                 {searchingEnd && (
@@ -537,11 +533,33 @@ function App() {
                   <Layer {...routeFallbackLayer} />
                 </Source>
               )}
-              {hazardGeoJson && (
-                <Source id="hazards" type="geojson" data={hazardGeoJson}>
-                  <Layer {...hazardLayer} />
-                </Source>
-              )}
+              {(selectedRoute?.hazards || []).map((hazard, idx) => {
+                const style = hazardIconForType(hazard.type);
+                return (
+                  <Marker
+                    key={`${hazard.type}-${hazard.lat}-${hazard.lng}-${idx}`}
+                    longitude={hazard.lng}
+                    latitude={hazard.lat}
+                    anchor="center"
+                  >
+                    <div
+                      title={hazard.message || style.label}
+                      className="flex items-center justify-center rounded-full border-2 border-white shadow-md"
+                      style={{
+                        width: 24,
+                        height: 24,
+                        backgroundColor: style.bg,
+                        color: '#fff',
+                        fontSize: style.icon === '!' ? 14 : 12,
+                        fontWeight: 700,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {style.icon}
+                    </div>
+                  </Marker>
+                );
+              })}
             </Map>
             {riskHeatGeoJson && (
               <div className="absolute bottom-8 left-4 w-72 rounded-md bg-white/95 px-3 py-2 text-xs text-gray-700 shadow border border-gray-200">
@@ -564,15 +582,15 @@ function App() {
                   <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Hazard pins</p>
                   <div className="mt-1 space-y-1 text-gray-600">
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600" />
-                      <span>high-risk cluster</span>
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white text-[11px] font-bold border border-white shadow-sm">!</span>
+                      <span>crime / incidents</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" />
-                      <span>moderate caution</span>
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] border border-white shadow-sm">⚠</span>
+                      <span>collisions</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 text-[11px] border border-white shadow-sm">💡</span>
                       <span>low lighting</span>
                     </div>
                   </div>

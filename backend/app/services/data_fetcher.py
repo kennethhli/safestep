@@ -10,6 +10,8 @@ class SFDataFetcher:
         self.headers = {}
         self.request_timeout = float(os.getenv("SF_DATA_TIMEOUT_SECONDS", "2.8"))
         self._feature_cache: Dict[Tuple[float, float, int, bool], Dict] = {}
+        self._raw_cache: Dict[str, List[Dict]] = {}
+        self._dead_datasets = set()
         self.session = requests.Session()
         if self.api_key:
             self.headers["X-App-Token"] = self.api_key
@@ -119,6 +121,11 @@ class SFDataFetcher:
             return []
 
     def _fetch_raw(self, dataset_id: str, limit: int = 1000) -> List[Dict]:
+        if dataset_id in self._dead_datasets:
+            return []
+        if dataset_id in self._raw_cache:
+            return self._raw_cache[dataset_id]
+
         url = f"{self.base_url}/{dataset_id}.json"
         params = {"$limit": limit}
         try:
@@ -126,8 +133,13 @@ class SFDataFetcher:
             response.raise_for_status()
             rows = response.json()
             self._debug_log(f"{dataset_id} raw success rows={len(rows)}")
+            self._raw_cache[dataset_id] = rows
             return rows
         except Exception as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            # remember permanent misses so we don't keep hammering bad dataset ids
+            if status in (404, 403):
+                self._dead_datasets.add(dataset_id)
             self._debug_log(f"{dataset_id} raw failed: {e}")
             return []
 
@@ -166,9 +178,11 @@ class SFDataFetcher:
         return []
     
     def fetch_street_lights(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
-        # dataset ids can rotate; try a few and geofilter locally
+        # skip broken/rotated dataset ids quickly; prefer cached raw pull when available
         candidate_ids = ["3psu-2p5q", "jhmw-wxhj", "dvit-zf4x"]
         for dataset_id in candidate_ids:
+            if dataset_id in self._dead_datasets:
+                continue
             raw_rows = self._fetch_raw(dataset_id, limit=900)
             if raw_rows:
                 filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
@@ -177,6 +191,13 @@ class SFDataFetcher:
         return []
 
     def fetch_accident_data(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
+        # prefer bbox query first to avoid downloading huge citywide dumps per waypoint
+        strategies = [
+            "latitude between {lat_min} and {lat_max} and longitude between {lng_min} and {lng_max}",
+        ]
+        rows = self._fetch_dataset_with_strategies("ubvf-ztfx", lat, lng, radius_meters, strategies, limit=600)
+        if rows:
+            return rows
         raw_rows = self._fetch_raw("ubvf-ztfx", limit=1200)
         if raw_rows:
             return self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
@@ -185,6 +206,8 @@ class SFDataFetcher:
     def fetch_pedestrian_activity(self, lat: float, lng: float, radius_meters: int = 500) -> List[Dict]:
         candidate_ids = ["t2mb-5m2v", "uu24-3a2q", "dima-8yku"]
         for dataset_id in candidate_ids:
+            if dataset_id in self._dead_datasets:
+                continue
             raw_rows = self._fetch_raw(dataset_id, limit=1200)
             if raw_rows:
                 filtered = self._filter_rows_near_point(raw_rows, lat, lng, radius_meters)
